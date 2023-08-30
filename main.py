@@ -11,15 +11,6 @@ BASE_DIR = Path(__file__).resolve().parent
 parser_files_dir = os.listdir(f"{BASE_DIR}/files_to_parse")
 
 
-def get_max_row(column):
-    for x in range(len(column)):
-        if column[x].value != None or x == 1:
-            continue
-        else:
-            return x
-    return int(x) + 1
-
-
 class ExcelParser:
     """
     Чтение данны из файла с помощью openpyxl
@@ -30,7 +21,7 @@ class ExcelParser:
 
     def format_is_valid(self, file):
         _, format = file.split(".")
-        return format in ["xlsx", "xlsx"]
+        return format in ["xlsx", "xlsm", "xls", "xltx"]
 
     def file_path(self, file):
         return f"{self.path_to_folder}{file}"
@@ -62,24 +53,19 @@ class ExcelParser:
             file_path = self.file_path(file)
             data = self.read(file_path)
             self.write_new_file(data)
-        return f"File Parse completed see result document: `{BASE_DIR}`"
-
-    def rows_generator(self, start, finish):
-        for i in range(start, finish):
-            yield i + 1
+        return f"Files Parse completed see result in: `{BASE_DIR}`"
 
     def read(self, path_to_file):
         data_frame = load_workbook(path_to_file)
         frame = data_frame.active
-        finish_row = get_max_row(frame['A'])
-        print('finish_row', finish_row)
-        rows_gen = (i + 1 for i in range(2, finish_row))
+        rows_gen = (i for i in range(2, len(frame["A"])))
         return self.get_data_row(rows_gen, frame)
 
     def get_data_row(self, rows, frame, data=[]):
         for row in rows:
             string_data = []
             for col in frame.iter_cols(9, 12):
+                print('row number', col[row])
                 string_data.append(col[row].value)
             new_data = self.string_data_valid(string_data)
             data.append(new_data)
@@ -90,15 +76,18 @@ class ExcelParser:
             return []
         return [i.strip() for i in re.split(r'\n', re.sub(r'[)(RU]', "", string).strip())]
 
+    def update_owner_list(self, author, patent_owners):
+        owner_list = patent_owners.remove(author) if author in patent_owners else patent_owners
+        return "\n".join(i for i in owner_list)
+
     def string_data_valid(self, string_data: list):
         new_list = []
         authors = self.get_members(string_data[0])
         patent_owners = self.get_members(string_data[1])
-
-        for a in authors:
-            if a[0] and a[1][0] and a[2][0] not in patent_owners:
-                owners = "\n".join(i for i in patent_owners)
-                new_list.append((a, owners, string_data[3]))
+        for author in authors:
+            if author[0] and author[1][0] and author[2][0] not in patent_owners:
+                owners = self.update_owner_list(author, patent_owners)
+                new_list.append((author, owners, string_data[3]))
         return new_list
 
 
