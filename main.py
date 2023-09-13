@@ -3,6 +3,9 @@ import re
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.styles import PatternFill
+from openpyxl.styles.differential import DifferentialStyle
+from openpyxl.formatting.rule import Rule
 
 from fuzzywuzzy import process
 
@@ -58,6 +61,7 @@ class ExcelAggregateData:
         tab.tableStyleInfo = style
         ws.add_table(tab)
         time_created = datetime.now().strftime("%d-%m-%Y_%H:%M")
+        
         wb.save(f"aggregator_{time_created}.xlsx")
         del new_data
 
@@ -70,7 +74,7 @@ class ExcelPatentData:
     3) адрес исполнителя
 
     """
-    def write_new_file(self, data, filename):
+    def write_new_file(self, data, filename, rows_count):
         #print('worksheet data', data)
         wb = Workbook()
         ws = wb.active
@@ -78,7 +82,9 @@ class ExcelPatentData:
         ws.append(["Патентообладатель", "Исполнитель", "Адрес исполнителя"])
         for row in data:
             for i in row:
+                
                 ws.append(i)
+                
         tab = Table(displayName="Table1", ref="A1:B2")
 
         # Add a default style with striped rows and banded columns
@@ -89,6 +95,17 @@ class ExcelPatentData:
         tab.tableStyleInfo = style
         ws.add_table(tab)
         time_created = datetime.now().strftime("%d-%m-%Y_%H:%M")
+        bg_red = PatternFill(fill_type='solid', fgColor="FFC7CE")
+        dxf = DifferentialStyle(fill=bg_red)
+        rule = Rule(type="expression", dxf=dxf, stopIfTrue=True)
+        rule.formula = ['$D1="deleted"']
+        ws.conditional_formatting.add(f"A1:D{rows_count*2}", rule)
+        # for row in ws.iter_rows(4, 5):
+        #     for cell in row:
+        #         print('cell.row', cell.value)
+        #         if cell.value == 'deleted':
+        #             cell.fill = PatternFill(start_color=peach, end_color=peach, fill_type='solid')
+        #             print('cell after fill', cell.fill)
         wb.save(f"{filename}_{time_created}.xlsx")
 
 
@@ -114,22 +131,25 @@ class ExcelParser:
             if not self.format_is_valid(file):
                 continue
             file_path = self.file_path(file)
-            data, deleted_data = self.read(file_path)
+            data, deleted_data, rows_count = self.read(file_path)
             # print("data by parse", data)
             # print("deleted_data by parse", deleted_data)
             file_manager = ExcelPatentData()
-            file_manager.write_new_file(data, "result")
+            file_manager.write_new_file(data, "result", rows_count)
 
-            file_manager.write_new_file(deleted_data, "deleted")
+            file_manager.write_new_file(deleted_data, "deleted", rows_count)
 
         return f"Files Parse completed see result in: `{BASE_DIR}`"
 
     def read(self, path_to_file):
         data_frame = load_workbook(path_to_file)
         frame = data_frame.active
-        # rows_gen = (i for i in range(2, len(frame["A"])))
-        rows_gen = (i for i in range(2, 1000))
-        return self.get_data_row(rows_gen, frame)
+        rows_count = 50
+        # rows_count = len(frame["A"])
+        rows_gen = (i for i in range(2, rows_count))
+        #rows_gen = (i for i in range(2, 10))
+        a, b = self.get_data_row(rows_gen, frame)
+        return a, b, rows_count
 
     def get_data_row(self, rows, frame, data=[]):
         deleted_data = []
@@ -335,28 +355,28 @@ class ExcelParser:
             author, is_company = self.author_fio_or_company_title(owner)
             if author is None:
                 # print("AUTHOR is NONE", author)
-                deleted_data.append((string_data[0], requester, address))
+                deleted_data.append((string_data[0], requester, address, "deleted"))
             # print("Author patent", author)
             author_upper = author.upper()
             if author_upper in address_upper:
-                deleted_data.append((string_data[0], requester, address))
+                deleted_data.append((string_data[0], requester, address, "deleted"))
 
             if requester.upper().replace(" ", "") in author_upper.replace(" ", ""):
-                deleted_data.append((string_data[0], requester, address))  
+                deleted_data.append((string_data[0], requester, address, "deleted"))  
             requester = requester.replace(".", " ")
 
             if author_upper.replace(".", " ") == requester.upper():
-                deleted_data.append((string_data[0], requester, address))
+                deleted_data.append((string_data[0], requester, address, "deleted"))
 
             if self.number_in_string(requester):
-                deleted_data.append((string_data[0], requester, address))
+                deleted_data.append((string_data[0], requester, address, "deleted"))
             av = self.fio_corrector(author_upper)
 
             if av in self.fio_corrector(requester.upper()):
-                deleted_data.append((string_data[0], requester, address))
+                deleted_data.append((string_data[0], requester, address, "deleted"))
 
             if self.words_firs_indexs(author_upper) in requester.upper():
-                deleted_data.append((string_data[0], requester, address))                    
+                deleted_data.append((string_data[0], requester, address, "deleted"))                    
             # if self.fuzzy_algorim(author_upper, requester, True):
             #     deleted_data.append((string_data[0], requester, address))
             # if self.fuzzy_algorim(self.words_firs_indexs(author_upper), address_upper, is_company):
@@ -364,10 +384,9 @@ class ExcelParser:
             else:
                 authors_list.append(author)
                 print("Authors list after append", authors_list)
-
         if not self.number_in_string(requester) and len(authors_list) > 0:
             if self.fuzzy_algorim(authors_list, requester):
-                    deleted_data.append((string_data[0], requester, address))
+                    deleted_data.append((string_data[0], requester, address, "deleted"))
                 # if self.fuzzy_algorim(self.words_firs_indexs(author_upper), address_upper, is_company):
                 #     deleted_data.append((string_data[0], requester, address))
                 # if is_company:
@@ -379,6 +398,7 @@ class ExcelParser:
                 authors = "\n".join(i for i in authors_list)
                 print("Authors results list after make string with join and \n", authors)
                 new_list.append((authors, requester, address))
+                deleted_data.append((string_data[0], requester, address, "Not deleted"))
             
         return new_list, deleted_data
 
@@ -398,162 +418,7 @@ class ExcelParser:
         res = process.extractOne(requester, author_list)[1]
         print("Word similarity percent:", res)
         return res > FUZZY_PERCENT
-
-    # def string_data_valid(self, string_data: list):
-    #     """
-    #     Парсим строку из таблицы
-    #     """
-    #     new_list = []
-    #     # Получаем список всех патентообладателей
-    #     patent_owners = self.get_members(string_data[0])
-    #     # Получаем значение адреса
-    #     address = string_data[2]
-    #     address_upper = address.upper()
-    #     requester = self.legal_entity_or_individual(address)
-    #     authors_list = []
-    #     for owner in patent_owners:
-            
-    #         print('patent_owners', patent_owners)
-    #         # Получаем патентообладателя(фио или название компании)
-    #         author = self.author_fio_or_company_title(owner)
-    #         if author is None:
-    #             print("AUTHOR is NONE", author)
-    #             continue
-    #         print("Author patent", author)
-    #         author_upper = author.upper()
-    #         if author_upper not in address_upper:
-    #                 # Проверяем есль ли 
-    #                 # address_author_fio = self.address_author_fio(address)
-    #                 # address_author_upper = address_author_fio.upper()
-    #                 # if author_upper not in address_author_upper:
-    #                 #     
-    #             if requester.upper().replace(" ", "") not in author_upper.replace(" ", ""):
-    #                 requester = requester.replace(".", " ")
-    #                 if author_upper.replace(".", " ") != requester.upper():
-    #                         # Проверяем есть ли цифры в имени заказчика если есть то это адресс
-    #                             # (нет фирмы и имени физ лица)
-    #                     if not self.number_in_string(requester):
-    #                         av = self.fio_corrector(author_upper)
-    #                         print('self.fio_corrector(author_upper)', av)
-    #                         if not av in self.fio_corrector(requester.upper()):
-    #                                 #if self.fio_converter(author).upper() != self.fio_converter(requester).upper():
-    #                                     # Если нужно полное имя из патентообладателя вместо author -> owner
-    #                             if not self.words_firs_indexs(author_upper) in requester.upper():
-    #                                 if not self.fuzzy(author_upper, address_upper):
-    #                                     if not self.fuzzy(self.words_firs_indexs(author_upper), address_upper):
-    #                                         authors_list.append(author)
-    #                                     print("authors_list authors_list", authors_list)
-
-
-    #     if not self.number_in_string(requester) and len(authors_list) > 0: 
-    #         authors = "\n".join(i for i in authors_list)
-    #         print("results list authors_list", authors)
-    #         new_list.append((authors, requester, address))
-            
-
-    #     return new_list    
-    # def string_data_valid(self, string_data: list):
-    #     """
-    #     Вычисляем подходит ли строка под наши условия:
-
-    #     В адресе переписки содержится один из вариантов:
-    #     1) адрес
-    #     2) адрес, Фамилия Имя Отчество,
-    #     3) адрес, Фамилия И.О.
-    #     4) адрес, компания,
-    #     5) адрес, компания, Фамилия Имя Отчество
-    #     6) адрес, компания, Фамилия И.О.
-        
-    #     Как понять, что строка нас интересует. 
-    #     Если патентообладатель и тот, кто делает патент - разные люди
-
-    #     Соответственно существуют варианты (слева патентообладатель, справа - тот кто делает)
-    #     1) Человек - человек
-    #     2) человек - компания
-    #     3) компания - человек
-    #     4) компания - компания
-
-    #     Каждый из вариантов анализируется по своему:
-
-    #     1) если ФИО отличаются - наш клиент, в противном случае - отбрасываем
-    #     2) берём всегда
-    #     3) берём всегда
-    #     4) самое сложное - надо понять одна ли компания справа и слева.
-    #     Сложность в том, что пишут их по разному.
-    #     Как вариант можно справа и слева разбить по словам и сравнить
-    #     есть ли справа и слева одинаковые слова. При этом надо исключать слова менее 3 букв.
-    #     Так же надо исключать общие слова типа Организация, Предприятие и т.д,
-    #     то есть сформировать некоторый словарь игнорируемых слов.
-    #     Если одинаковое слово нашлось, то наш клиент.
-
-    #     Итого, что надо сделать:
-
-    #     1) научится выделять человека, фирму и по возможность - адрес.
-    #     2) научится принимать решение по 4 вариантам
-    #     3) сформировать новую таблицу с выделенными записями
-    #     4) подсчитать количество патентов для каждого конкурента
-
-    #     Что надо учесть:
-    #     1) в патентообладателе может быть несколько записей, причем вперемешку и люди и фирма.
-    #     Значит анализ надо проводить по каждой записи.
-    #     Бывает так, что в списке есть человек и он же содержится в адресе переписки.
-    #     Это нам не интересно.
-    #     2) человек может записываться в разных форматах:
-    #     Иванов Иван Иванович или Иванов И.И. следовательно надо понимать, что это один человек
-    #     3) фирмы записываются по разному, надо научится понимать, что это одна фирма
-    #     4) бывает что название фирмы одно, а адреса разные (типа филиалы).
-    #     При подсчёте количества патентов надо такие записи считать вместе.
-    #     """
-    #     new_list = []
-    #     # Получаем список всех патентообладателей
-    #     patent_owners = self.get_members(string_data[0])
-    #     # Получаем значение адреса
-    #     address = string_data[2]
-    #     authors_list = []
-    #     for owner in patent_owners:
-            
-    #         print('patent_owners', patent_owners)
-    #         # Получаем патентообладателя(фио или название компании)
-    #         author = self.author_fio_or_company_title(owner)
-    #         if author is None:
-    #             print("AUTHOR is NONE", author)
-    #             continue
-           
-    #         print("Author patent", author)
-    #         author_upper = author.upper()
-    #         address_upper = address.upper()
-    #         if author_upper not in address_upper:
-    #                 # Проверяем есль ли 
-    #                 # address_author_fio = self.address_author_fio(address)
-    #                 # address_author_upper = address_author_fio.upper()
-    #                 # if author_upper not in address_author_upper:
-    #                 #     
-    #             requester = self.legal_entity_or_individual(address)
-    #             if requester.upper().replace(" ", "") not in author_upper.replace(" ", ""):
-    #                 requester = requester.replace(".", " ")
-    #                 if author_upper.replace(".", " ") != requester.upper():
-    #                         # Проверяем есть ли цифры в имени заказчика если есть то это адресс
-    #                             # (нет фирмы и имени физ лица)
-    #                     if not self.number_in_string(requester):
-    #                         av = self.fio_corrector(author_upper)
-    #                         print('self.fio_corrector(author_upper)', av)
-    #                         if not av in self.fio_corrector(requester.upper()):
-    #                                 #if self.fio_converter(author).upper() != self.fio_converter(requester).upper():
-    #                                     # Если нужно полное имя из патентообладателя вместо author -> owner
-    #                             if not self.words_firs_indexs(author_upper) in requester.upper():
-                                        
-    #                                     authors_list.append(author)
-    #                                     print("authors_list authors_list", authors_list)
-
-
-    #     if not self.number_in_string(requester): 
-    #         authors = "\n".join(i for i in authors_list)
-    #         print("results list authors_list", authors)
-    #         new_list.append((authors, requester, address))
-            
-
-    #     return new_list
-
+    
 
 if __name__ == "__main__":
     """
