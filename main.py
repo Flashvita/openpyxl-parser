@@ -75,7 +75,7 @@ class ExcelPatentData:
     3) адрес исполнителя
 
     """
-    def write_new_file(self, data):
+    def write_new_file(self, data, filename):
         print('worksheet data', data)
         wb = Workbook()
         ws = wb.active
@@ -94,7 +94,7 @@ class ExcelPatentData:
         tab.tableStyleInfo = style
         ws.add_table(tab)
         time_created = datetime.now().strftime("%d-%m-%Y_%H:%M")
-        wb.save(f"test_{time_created}.xlsx")
+        wb.save(f"{filename}_{time_created}.xlsx")
 
 
 class ExcelParser:
@@ -119,8 +119,18 @@ class ExcelParser:
             if not self.format_is_valid(file):
                 continue
             file_path = self.file_path(file)
-            data = self.read(file_path)
-            ExcelPatentData().write_new_file(data)
+            data, deleted_data = self.read(file_path)
+            print("data by parse", data)
+            print("deleted_data by parse", deleted_data)
+            file_manager = ExcelPatentData()
+            file_manager.write_new_file(data, "result")
+            print('pause')
+            file_manager.write_new_file(deleted_data, "deleted")
+            print('end')
+            # deleted_data = self.read_1(file_path, data)
+            
+
+            # ExcelPatentData().write_new_file(deleted_data)
             #ExcelAggregateData().write_new_file(data)
             
         return f"Files Parse completed see result in: `{BASE_DIR}`"
@@ -129,20 +139,20 @@ class ExcelParser:
         data_frame = load_workbook(path_to_file)
         frame = data_frame.active
         #rows_gen = (i for i in range(2, len(frame["A"])))
-        rows_gen = (i for i in range(2, 400))
+        rows_gen = (i for i in range(2, 50))
         return self.get_data_row(rows_gen, frame)
 
     def get_data_row(self, rows, frame, data=[]):
+        deleted_data = []
         for row in rows:
             string_data = []
             for col in frame.iter_cols(10, 12):
-                print('row number', col[row])
+                print('row number', col[row].value)
                 string_data.append(col[row].value)
-            new_data = self.string_data_valid(string_data)
+            new_data, del_data = self.string_data_valid(string_data)
             data.append(new_data)
-        return data
-
-    
+            deleted_data.append(del_data)
+        return data, deleted_data
 
     def get_members(self, string):
         """
@@ -176,7 +186,6 @@ class ExcelParser:
         Получаем фио автора или название фирмы
         """
         try:
-            
             string = self.cut_exception_words(string)
             fio = re.split(" ", string)
             len_fio = len(fio)
@@ -184,14 +193,17 @@ class ExcelParser:
                 print('fio  fio', fio)
                 company_name = self.get_company_name(string)
                 if len(company_name) != 0:
-                    return company_name[0]
+                    is_company = True
+                    return company_name[0], is_company
                 res = f"{fio[0]} {fio[1][0]} {fio[2][0]}"
+                is_company = False
             elif len(fio) == 2:
                 res = f"{fio[0]} {fio[1][0]}"
-
+                is_company = True
             else:
                 res = self.legal_entity_or_individual(string)
-            return res
+                is_company = False
+            return res, is_company
         except:
             print("Exception in author_fio_or_company_title", string)
 
@@ -260,15 +272,20 @@ class ExcelParser:
                 
                 return list_data[0]
             fio = string
-            if len(string) < 35:
-                # Если  название фирымы в ковычках не нашлось
+            # Допустим что фамилия имя и отчество
+            # в сумме не может быть больше 35 символов
+            if len(string) < 35: 
+                # Если  название фирмы в ковычках не нашлось
                 list_data = re.split(",", string)
                 if len(list_data) != 0:
                     # Значит есть фамилия в конце строки
-                    if not self.number_in_string(list_data[-2]):
-                        fio = self.cut_exception_words(list_data[-2])
-                    else:
-                        fio = self.cut_exception_words(list_data[-1])
+                    # if not self.number_in_string(list_data[-2]):
+                    #     fio = self.cut_exception_words(list_data[-2])
+                    # else:
+                    #     fio = self.cut_exception_words(list_data[-1])
+                    fio = self.cut_exception_words(list_data[-1])
+                    if self.number_in_string(fio):
+                       fio = " ".joint(i for i in (re.split(" ", fio)[-3]))
                 else:
                     # Если в адресе есть фамилия
                     fio = f"{fio[0]} {fio[1][0]} {fio[2][0]}"
@@ -292,7 +309,6 @@ class ExcelParser:
         list_number = re.findall(r'[0-9]', string)
         return len(list_number) > 0
 
-
     def words_firs_indexs(self, string):
         res = []
         i_list = string.split(" ")
@@ -304,13 +320,14 @@ class ExcelParser:
             else:
                 continue
         return "".join(i[0] for i in res)
-       
+
 
     def string_data_valid(self, string_data: list):
         """
         Парсим строку из таблицы
         """
         new_list = []
+        deleted_data = []
         # Получаем список всех патентообладателей
         patent_owners = self.get_members(string_data[0])
         # Получаем значение адреса
@@ -322,43 +339,109 @@ class ExcelParser:
             
             print('patent_owners', patent_owners)
             # Получаем патентообладателя(фио или название компании)
-            author = self.author_fio_or_company_title(owner)
+            author, is_company = self.author_fio_or_company_title(owner)
             if author is None:
                 print("AUTHOR is NONE", author)
-                continue
+                deleted_data.append((string_data[0], requester, address))
             print("Author patent", author)
             author_upper = author.upper()
-            if author_upper not in address_upper:
-                    # Проверяем есль ли 
-                    # address_author_fio = self.address_author_fio(address)
-                    # address_author_upper = address_author_fio.upper()
-                    # if author_upper not in address_author_upper:
-                    #     
-                if requester.upper().replace(" ", "") not in author_upper.replace(" ", ""):
-                    requester = requester.replace(".", " ")
-                    if author_upper.replace(".", " ") != requester.upper():
-                            # Проверяем есть ли цифры в имени заказчика если есть то это адресс
-                                # (нет фирмы и имени физ лица)
-                        if not self.number_in_string(requester):
-                            av = self.fio_corrector(author_upper)
-                            print('self.fio_corrector(author_upper)', av)
-                            if not av in self.fio_corrector(requester.upper()):
-                                    #if self.fio_converter(author).upper() != self.fio_converter(requester).upper():
-                                        # Если нужно полное имя из патентообладателя вместо author -> owner
-                                if not self.words_firs_indexs(author_upper) in requester.upper():
-                                        
-                                        authors_list.append(author)
-                                        print("authors_list authors_list", authors_list)
+            if author_upper in address_upper:
+                deleted_data.append((string_data[0], requester, address))
+         
+            if requester.upper().replace(" ", "") in author_upper.replace(" ", ""):
+                deleted_data.append((string_data[0], requester, address))  
+            requester = requester.replace(".", " ")
+
+            if author_upper.replace(".", " ") == requester.upper():
+                deleted_data.append((string_data[0], requester, address))
+                        
+            if self.number_in_string(requester):
+                deleted_data.append((string_data[0], requester, address))
+            av = self.fio_corrector(author_upper)
+
+            if av in self.fio_corrector(requester.upper()):
+                deleted_data.append((string_data[0], requester, address))
+                                   
+            if self.words_firs_indexs(author_upper) in requester.upper():
+                deleted_data.append((string_data[0], requester, address))                    
+            # if self.fuzzy(author_upper, address_upper, is_company):
+            #     deleted_data.append((string_data[0], requester, address))
+            # if self.fuzzy(self.words_firs_indexs(author_upper), address_upper, is_company):
+            #     deleted_data.append((string_data[0], requester, address))
+            else:
+                authors_list.append(author)
+                print("authors_list authors_list", authors_list)
 
 
-        if not self.number_in_string(requester) and len(authors_list) > 0: 
-            authors = "\n".join(i for i in authors_list)
-            print("results list authors_list", authors)
-            new_list.append((authors, requester, address))
+            if not self.number_in_string(requester) and len(authors_list) > 0: 
+                authors = "\n".join(i for i in authors_list)
+                print("results list authors_list", authors)
+                new_list.append((authors, requester, address))
+            return new_list, deleted_data
+
+
+        
+    def fuzzy(self, a, b, is_company):
+        from fuzzywuzzy import process
+        if not is_company:# Check company only
+            return False
+        choices = re.split(",", b)
+        res = process.extract(a, choices, limit=1)[0][1] 
+        return res > 50
+
+    # def string_data_valid(self, string_data: list):
+    #     """
+    #     Парсим строку из таблицы
+    #     """
+    #     new_list = []
+    #     # Получаем список всех патентообладателей
+    #     patent_owners = self.get_members(string_data[0])
+    #     # Получаем значение адреса
+    #     address = string_data[2]
+    #     address_upper = address.upper()
+    #     requester = self.legal_entity_or_individual(address)
+    #     authors_list = []
+    #     for owner in patent_owners:
+            
+    #         print('patent_owners', patent_owners)
+    #         # Получаем патентообладателя(фио или название компании)
+    #         author = self.author_fio_or_company_title(owner)
+    #         if author is None:
+    #             print("AUTHOR is NONE", author)
+    #             continue
+    #         print("Author patent", author)
+    #         author_upper = author.upper()
+    #         if author_upper not in address_upper:
+    #                 # Проверяем есль ли 
+    #                 # address_author_fio = self.address_author_fio(address)
+    #                 # address_author_upper = address_author_fio.upper()
+    #                 # if author_upper not in address_author_upper:
+    #                 #     
+    #             if requester.upper().replace(" ", "") not in author_upper.replace(" ", ""):
+    #                 requester = requester.replace(".", " ")
+    #                 if author_upper.replace(".", " ") != requester.upper():
+    #                         # Проверяем есть ли цифры в имени заказчика если есть то это адресс
+    #                             # (нет фирмы и имени физ лица)
+    #                     if not self.number_in_string(requester):
+    #                         av = self.fio_corrector(author_upper)
+    #                         print('self.fio_corrector(author_upper)', av)
+    #                         if not av in self.fio_corrector(requester.upper()):
+    #                                 #if self.fio_converter(author).upper() != self.fio_converter(requester).upper():
+    #                                     # Если нужно полное имя из патентообладателя вместо author -> owner
+    #                             if not self.words_firs_indexs(author_upper) in requester.upper():
+    #                                 if not self.fuzzy(author_upper, address_upper):
+    #                                     if not self.fuzzy(self.words_firs_indexs(author_upper), address_upper):
+    #                                         authors_list.append(author)
+    #                                     print("authors_list authors_list", authors_list)
+
+
+    #     if not self.number_in_string(requester) and len(authors_list) > 0: 
+    #         authors = "\n".join(i for i in authors_list)
+    #         print("results list authors_list", authors)
+    #         new_list.append((authors, requester, address))
             
 
-        return new_list    
-        
+    #     return new_list    
     # def string_data_valid(self, string_data: list):
     #     """
     #     Вычисляем подходит ли строка под наши условия:
