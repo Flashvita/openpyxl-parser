@@ -8,6 +8,7 @@ from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.formatting.rule import Rule
 
 from fuzzywuzzy import process
+from fuzzywuzzy import fuzz
 
 from pathlib import Path
 from datetime import datetime
@@ -17,7 +18,8 @@ parser_files_dir = os.listdir(f"{BASE_DIR}/files_to_parse")
 
 
 # https://pypi.org/project/fuzzywuzzy/
-# Процент сходства по которому отбрасываются слова
+# Процент сходства 
+# Если сходство болле FUZZY_PERCENT то слово отбрасывается
 FUZZY_PERCENT = 59
 
 
@@ -29,7 +31,7 @@ WORDS_TO_CUT = [
 
 class ExcelAggregateData:
     """
-    Запись данных в таблицу
+    Запись данных в таблицу aggregator
     1) исполнитель
     2) количество оформленных  патентов
     """
@@ -38,7 +40,7 @@ class ExcelAggregateData:
         data_list = []
         for obj in data:
             for i in obj:
-                data_list.append(i[0])
+                data_list.append(i[1])
         return data_list
 
     def write_new_file(self, data):
@@ -47,12 +49,11 @@ class ExcelAggregateData:
         ws = wb.active
         new_data = self.make_dict_data(data)
         res = Counter(new_data).most_common()
-        #add column headings. NB. these must be strings
+        # add column headings. NB. these must be strings
         ws.append(["Патентообладатель", "Количество патентов"])
         for i in res:
             ws.append(i)
         tab = Table(displayName="Table1", ref="A1:B2")
-
         # Add a default style with striped rows and banded columns
         style = TableStyleInfo(name="TableStyleMedium9", showFirstColumn=False,
                                showLastColumn=False, showRowStripes=True,
@@ -68,7 +69,7 @@ class ExcelAggregateData:
 
 class ExcelPatentData:
     """
-    Запись данных в таблицу
+    Запись данных в таблицы result, deleted
     1) патентообладатель
     2) исполнитель
     3) адрес исполнителя
@@ -82,9 +83,7 @@ class ExcelPatentData:
         ws.append(["Патентообладатель", "Исполнитель", "Адрес исполнителя"])
         for row in data:
             for i in row:
-                
                 ws.append(i)
-                
         tab = Table(displayName="Table1", ref="A1:B2")
 
         # Add a default style with striped rows and banded columns
@@ -95,17 +94,13 @@ class ExcelPatentData:
         tab.tableStyleInfo = style
         ws.add_table(tab)
         time_created = datetime.now().strftime("%d-%m-%Y_%H:%M")
+        # Устанавливаем правило для выделения цветом в файле deleted
         bg_red = PatternFill(fill_type='solid', fgColor="FFC7CE")
         dxf = DifferentialStyle(fill=bg_red)
         rule = Rule(type="expression", dxf=dxf, stopIfTrue=True)
         rule.formula = ['$D1="deleted"']
         ws.conditional_formatting.add(f"A1:D{rows_count*2}", rule)
-        # for row in ws.iter_rows(4, 5):
-        #     for cell in row:
-        #         print('cell.row', cell.value)
-        #         if cell.value == 'deleted':
-        #             cell.fill = PatternFill(start_color=peach, end_color=peach, fill_type='solid')
-        #             print('cell after fill', cell.fill)
+        # Сохраняем документ
         wb.save(f"{filename}_{time_created}.xlsx")
 
 
@@ -119,8 +114,7 @@ class ExcelParser:
         self.path_to_folder = f"{BASE_DIR}/files_to_parse/"
 
     def format_is_valid(self, file):
-        # _, format = file.split(".")
-        format = file[-4:]
+        *_, format = file.split(".")
         return format in ["xlsx", "xlsm", "xls", "xltx"]
 
     def file_path(self, file):
@@ -132,36 +126,95 @@ class ExcelParser:
                 continue
             file_path = self.file_path(file)
             data, deleted_data, rows_count = self.read(file_path)
-            # print("data by parse", data)
-            # print("deleted_data by parse", deleted_data)
             file_manager = ExcelPatentData()
             file_manager.write_new_file(data, "result", rows_count)
 
             file_manager.write_new_file(deleted_data, "deleted", rows_count)
+            ExcelAggregateData().write_new_file(data)
 
         return f"Files Parse completed see result in: `{BASE_DIR}`"
 
     def read(self, path_to_file):
+        
         data_frame = load_workbook(path_to_file)
         frame = data_frame.active
-        rows_count = 50
-        # rows_count = len(frame["A"])
+        #rows_count = 100
+        rows_count = len(frame["A"])
         rows_gen = (i for i in range(2, rows_count))
         #rows_gen = (i for i in range(2, 10))
-        a, b = self.get_data_row(rows_gen, frame)
-        return a, b, rows_count
+        data, deleted_data = self.read_from_table(rows_gen, frame)
+        return data, deleted_data, rows_count
 
-    def get_data_row(self, rows, frame, data=[]):
-        deleted_data = []
+    def read_from_table(self, rows, frame, data=[], deleted_data=[]):
         for row in rows:
             string_data = []
             for col in frame.iter_cols(10, 12):
                 # print('row number', col[row].value)
                 string_data.append(col[row].value)
-            new_data, del_data = self.string_data_valid(string_data)
+            new_data, del_data = self.parse_string(string_data)
             data.append(new_data)
             deleted_data.append(del_data)
         return data, deleted_data
+
+    def parse_string(self, string_data: list):
+        """
+        Парсим строку из таблицы
+        """
+        new_list = []
+        deleted_data = []
+        # Получаем список всех патентообладателей
+        patent_owners = self.get_members(string_data[0])
+        # print('patent_owners list for iteration', )
+        # Получаем значение адреса
+        address = string_data[2]
+        address_upper = address.upper()
+        requester = self.legal_entity_or_individual(address)
+        authors_list = []
+        for owner in patent_owners:
+
+            # print('patent_owners', patent_owners)
+            # Получаем патентообладателя(фио или название компании)
+            author = self.author_fio_or_company_title(owner)
+            if author is None:
+                # print("AUTHOR is NONE", author)
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+                continue
+
+            author_upper = author.upper()
+
+            if author_upper in address_upper:
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+
+            if requester.upper().replace(" ", "") in author_upper.replace(" ", ""):
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+
+            requester = requester.replace(".", " ")
+
+            if author_upper.replace(".", " ") == requester.upper():
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+
+            if self.number_in_string(requester):
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+
+            author_cor = self.fio_corrector(author_upper)
+            if author_cor in self.fio_corrector(requester.upper()):
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+
+            if self.words_firs_indexs(author_upper) in requester.upper():
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+            else:
+                authors_list.append(author)
+
+        if not self.number_in_string(requester) and len(authors_list) > 0:
+            if self.fuzzy_algorim(authors_list, requester):
+                deleted_data.append((string_data[0], requester, address, "deleted"))
+            else:
+                authors = "\n".join(i for i in authors_list)
+                print("Authors res ==>", authors)
+                new_list.append((authors, self.cut_exc_words(requester), address))
+                deleted_data.append((string_data[0], requester, address, "Not deleted"))
+
+        return new_list, deleted_data
 
     def get_members(self, string):
         """
@@ -178,7 +231,7 @@ class ExcelParser:
             return None
         return "\n".join(i for i in owner_list)
 
-    def cut_exception_words(self, string):
+    def cut_exc_words(self, string):
         """
         Вырезаем слова исключения и стороки и точки
         при сокращени имени и отчества
@@ -194,24 +247,20 @@ class ExcelParser:
         Получаем фио автора или название фирмы
         """
         try:
-            string = self.cut_exception_words(string)
+            string = self.cut_exc_words(string)
             fio = re.split(" ", string)
             len_fio = len(fio)
             if len_fio in [3, 4]:
                 # print('fio  fio', fio)
                 company_name = self.get_company_name(string)
                 if len(company_name) != 0:
-                    is_company = True
-                    return company_name[0], is_company
+                    return company_name[0]
                 res = f"{fio[0]} {fio[1][0]} {fio[2][0]}"
-                is_company = False
             elif len(fio) == 2:
                 res = f"{fio[0]} {fio[1][0]}"
-                is_company = True
             else:
                 res = self.legal_entity_or_individual(string)
-                is_company = False
-            return res, is_company
+            return res
         except:
             print("Exception in author_fio_or_company_title", string)
 
@@ -271,7 +320,7 @@ class ExcelParser:
                     if self.tc_exist(string):
                         # Если нет занятой и из строки не удалился БЦ
                         return " ".join(i for i in list_data[-1].split(" ")[-2:])
-                    return self.cut_exception_words(list_data[-1])
+                    return self.cut_exc_words(list_data[-1])
 
             list_data = self.get_company_name(string)
             if len(list_data) != 0:
@@ -285,12 +334,7 @@ class ExcelParser:
                 # Если  название фирмы в ковычках не нашлось
                 list_data = re.split(",", string)
                 if len(list_data) != 0:
-                    # Значит есть фамилия в конце строки
-                    # if not self.number_in_string(list_data[-2]):
-                    #     fio = self.cut_exception_words(list_data[-2])
-                    # else:
-                    #     fio = self.cut_exception_words(list_data[-1])
-                    fio = self.cut_exception_words(list_data[-1])
+                    fio = self.cut_exc_words(list_data[-1])
                     if self.number_in_string(fio):
                        fio = " ".join(i for i in (re.split(" ", fio)[-2:]))
                 else:
@@ -333,106 +377,48 @@ class ExcelParser:
             else:
                 continue
         return "".join(i[0] for i in res)
-
-    def string_data_valid(self, string_data: list):
-        """
-        Парсим строку из таблицы
-        """
-        new_list = []
-        deleted_data = []
-        # Получаем список всех патентообладателей
-        patent_owners = self.get_members(string_data[0])
-        print('patent_owners list for iteration', )
-        # Получаем значение адреса
-        address = string_data[2]
-        address_upper = address.upper()
-        requester = self.legal_entity_or_individual(address)
-        authors_list = []
-        for owner in patent_owners:
-
-            # print('patent_owners', patent_owners)
-            # Получаем патентообладателя(фио или название компании)
-            author, is_company = self.author_fio_or_company_title(owner)
-            if author is None:
-                # print("AUTHOR is NONE", author)
-                deleted_data.append((string_data[0], requester, address, "deleted"))
-            # print("Author patent", author)
-            author_upper = author.upper()
-            if author_upper in address_upper:
-                deleted_data.append((string_data[0], requester, address, "deleted"))
-
-            if requester.upper().replace(" ", "") in author_upper.replace(" ", ""):
-                deleted_data.append((string_data[0], requester, address, "deleted"))  
-            requester = requester.replace(".", " ")
-
-            if author_upper.replace(".", " ") == requester.upper():
-                deleted_data.append((string_data[0], requester, address, "deleted"))
-
-            if self.number_in_string(requester):
-                deleted_data.append((string_data[0], requester, address, "deleted"))
-            av = self.fio_corrector(author_upper)
-
-            if av in self.fio_corrector(requester.upper()):
-                deleted_data.append((string_data[0], requester, address, "deleted"))
-
-            if self.words_firs_indexs(author_upper) in requester.upper():
-                deleted_data.append((string_data[0], requester, address, "deleted"))                    
-            # if self.fuzzy_algorim(author_upper, requester, True):
-            #     deleted_data.append((string_data[0], requester, address))
-            # if self.fuzzy_algorim(self.words_firs_indexs(author_upper), address_upper, is_company):
-            #     deleted_data.append((string_data[0], requester, address))
-            else:
-                authors_list.append(author)
-                print("Authors list after append", authors_list)
-        if not self.number_in_string(requester) and len(authors_list) > 0:
-            if self.fuzzy_algorim(authors_list, requester):
-                    deleted_data.append((string_data[0], requester, address, "deleted"))
-                # if self.fuzzy_algorim(self.words_firs_indexs(author_upper), address_upper, is_company):
-                #     deleted_data.append((string_data[0], requester, address))
-                # if is_company:
-                #     # Если автором является компания проверяем абревиатуры по ливенштейну
-                #     company_upper_list = [self.words_firs_indexs(i) for i in authors_list]
-                #     if self.fuzzy_algorim(company_upper_list, requester):
-                #         deleted_data.append((string_data[0], requester, address))
-            else:
-                authors = "\n".join(i for i in authors_list)
-                print("Authors results list after make string with join and \n", authors)
-                new_list.append((authors, requester, address))
-                deleted_data.append((string_data[0], requester, address, "Not deleted"))
-            
-        return new_list, deleted_data
-
+    
     def fuzzy_algorim(self, author_list, requester):
         """
         Анализ текста с помощью алгоритма Левенштейна для анализа текста
         Проверяем есть ли заказцик в патентообладателях с учётом погрешности
         https://pypi.org/project/fuzzywuzzy/
         """
-        # if not is_company:
-        #     # Если физ лицо проверять не надо
-        #     return False
-        #choices = re.split(",", b)
         print('fuzzy_algorim data', requester, author_list)
-        # ch = []
-        # ch.append(author_list)
-        res = process.extractOne(requester, author_list)[1]
-        print("Word similarity percent:", res)
-        return res > FUZZY_PERCENT
-    
+
+        percent = process.extractOne(requester, author_list)[1]
+        print("Word similarity percent:", percent)
+        res = percent > FUZZY_PERCENT
+        if not res:
+            for i in author_list:
+                if len(i) > 35:
+                    percent = fuzz.ratio(requester, i)
+                    print("Word similarity percent level 2:", percent)
+                    res = percent > FUZZY_PERCENT
+                    if not res:
+                        percent = process.extractOne(requester, [i for i in (re.split(" ", i))])[1]
+                        print("Word similarity percent level 3====>>>>>:", percent)
+                        res = percent > FUZZY_PERCENT
+        return res
+
 
 if __name__ == "__main__":
     """
-    На выходе - первый документ 
-    отфильтрованный список с полями:
+    На выходе в рабочей директории:
+       - Первый документ
+        отфильтрованный список с полями:
         1) патентообладатель
         2) исполнитель
         3) адрес исполнителя
 
-        Второй документ:
+        - Второй документ:
+        Копия оригинального файла с выделением 
+        удалённых строк
+
+        - Третий документ:
         1) исполнитель
         2) количество оформленных  патентов
     """
     parser = ExcelParser()
     res = parser.parse_files()
     print("Parse completed:", res)
-
